@@ -1,0 +1,227 @@
+# Override default error log location immediately
+error_log <%= ENV["NGINX_ERROR_LOG_PATH"] || "/dev/stderr" %>;
+
+daemon off;
+worker_processes <%= ENV["NGINX_WORKERS"] || 1 %>;
+pid /tmp/nginx.pid;
+
+events {
+    worker_connections <%= ENV["NGINX_WORKER_CONNECTIONS"] || 1024 %>;
+    use epoll;
+    accept_mutex on;
+}
+
+http {
+    include       /layers/jabrown85-examples_nginx/nginx/etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    # Temporary file paths
+    client_body_temp_path /tmp/nginx/client_temp;
+    proxy_temp_path /tmp/nginx/proxy_temp;
+    fastcgi_temp_path /tmp/nginx/fastcgi_temp;
+    uwsgi_temp_path /tmp/nginx/uwsgi_temp;
+    scgi_temp_path /tmp/nginx/scgi_temp;
+
+    # Rate limiting zones
+    limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+    limit_req_zone $binary_remote_addr zone=login:10m rate=1r/s;
+
+    log_format custom '$remote_addr - $remote_user [$time_local] '
+                     '"$request" $status $body_bytes_sent '
+                     '"$http_referer" "$http_user_agent" '
+                     'rt=$request_time uct="$upstream_connect_time" '
+                     'uht="$upstream_header_time" urt="$upstream_response_time"';
+
+    access_log <%= ENV["NGINX_ACCESS_LOG_PATH"] || "/dev/stdout" %> custom;
+    error_log <%= ENV["NGINX_ERROR_LOG_PATH"] || "/dev/stderr" %>;
+
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    client_max_body_size <%= ENV["MAX_UPLOAD_SIZE"] || "50m" %>;
+
+    # Enable gzip compression
+    gzip on;
+    gzip_comp_level 6;
+    gzip_vary on;
+    gzip_min_length 1000;
+    gzip_proxied any;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        text/javascript
+        application/json
+        application/javascript
+        application/xml+rss
+        application/atom+xml
+        image/svg+xml;
+
+    server {
+        listen <%= ENV["PORT"] || 5000 %>;
+        listen [::]:<%= ENV["PORT"] || 5000 %>;
+        server_name <%= ENV["SERVER_NAME"] || "_" %>;
+        root <%= ENV["DOCUMENT_ROOT"] || "/workspace" %>;
+        index index.html index.htm;
+
+        # Health check endpoint (no rate limiting)
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+            add_header X-Custom-App "<%= ENV["APP_NAME"] || 'nginx-buildpack-demo' %>" always;
+            add_header X-Frame-Options DENY always;
+            add_header X-Content-Type-Options nosniff always;
+            add_header X-XSS-Protection "1; mode=block" always;
+        }
+
+        # API endpoints with rate limiting
+        location /api/ {
+            limit_req zone=api burst=20 nodelay;
+            limit_req_status 429;
+
+            # CORS headers for API
+            add_header 'Access-Control-Allow-Origin' '<%= ENV["CORS_ORIGIN"] || "*" %>';
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS';
+            add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization';
+
+            # Security headers
+            add_header X-Custom-App "<%= ENV["APP_NAME"] || 'nginx-buildpack-demo' %>" always;
+            add_header X-Frame-Options DENY always;
+            add_header X-Content-Type-Options nosniff always;
+            add_header X-XSS-Protection "1; mode=block" always;
+
+            # Handle preflight requests
+            if ($request_method = 'OPTIONS') {
+                add_header 'Access-Control-Max-Age' 1728000;
+                add_header 'Content-Type' 'text/plain; charset=utf-8';
+                add_header 'Content-Length' 0;
+                return 204;
+            }
+
+            try_files $uri $uri/ @api_fallback;
+        }
+
+        # Login endpoint with strict rate limiting
+        location /login {
+            limit_req zone=login burst=5 nodelay;
+            limit_req_status 429;
+
+            # Security headers
+            add_header X-Custom-App "<%= ENV["APP_NAME"] || 'nginx-buildpack-demo' %>" always;
+            add_header X-Frame-Options DENY always;
+            add_header X-Content-Type-Options nosniff always;
+            add_header X-XSS-Protection "1; mode=block" always;
+
+            try_files $uri $uri/ @api_fallback;
+        }
+
+        # Static assets with long cache
+        location ~* \.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            add_header X-Custom-App "<%= ENV["APP_NAME"] || 'nginx-buildpack-demo' %>" always;
+            add_header X-Frame-Options DENY always;
+            add_header X-Content-Type-Options nosniff always;
+            add_header X-XSS-Protection "1; mode=block" always;
+            access_log off;
+
+            # Enable CORS for fonts
+            location ~* \.(woff|woff2|ttf|eot)$ {
+                add_header 'Access-Control-Allow-Origin' '*';
+                add_header X-Custom-App "<%= ENV["APP_NAME"] || 'nginx-buildpack-demo' %>" always;
+                add_header X-Frame-Options DENY always;
+                add_header X-Content-Type-Options nosniff always;
+                add_header X-XSS-Protection "1; mode=block" always;
+            }
+        }
+
+        # Admin section (IP restriction example)
+        location /admin/ {
+            # Allow localhost and private networks
+            allow 127.0.0.1;
+            allow 10.0.0.0/8;
+            allow 172.16.0.0/12;
+            allow 192.168.0.0/16;
+            deny all;
+
+            # Security headers
+            add_header X-Custom-App "<%= ENV["APP_NAME"] || 'nginx-buildpack-demo' %>" always;
+            add_header X-Frame-Options DENY always;
+            add_header X-Content-Type-Options nosniff always;
+            add_header X-XSS-Protection "1; mode=block" always;
+
+            try_files $uri $uri/ /admin/index.html;
+        }
+
+        # Main application (SPA routing)
+        location / {
+            # Security headers
+            add_header X-Custom-App "<%= ENV["APP_NAME"] || 'nginx-buildpack-demo' %>" always;
+            add_header X-Frame-Options DENY always;
+            add_header X-Content-Type-Options nosniff always;
+            add_header X-XSS-Protection "1; mode=block" always;
+
+            try_files $uri $uri/ /index.html;
+
+            # Security headers for HTML content
+            location ~* \.html$ {
+                add_header Cache-Control "no-cache, no-store, must-revalidate";
+                add_header Pragma "no-cache";
+                add_header Expires "0";
+                add_header X-Custom-App "<%= ENV["APP_NAME"] || 'nginx-buildpack-demo' %>" always;
+                add_header X-Frame-Options DENY always;
+                add_header X-Content-Type-Options nosniff always;
+                add_header X-XSS-Protection "1; mode=block" always;
+            }
+        }
+
+        # Fallback for API requests (could proxy to backend)
+        location @api_fallback {
+            return 404 '{"error": "API endpoint not found"}';
+            add_header Content-Type application/json;
+            add_header X-Custom-App "<%= ENV["APP_NAME"] || 'nginx-buildpack-demo' %>" always;
+            add_header X-Frame-Options DENY always;
+            add_header X-Content-Type-Options nosniff always;
+            add_header X-XSS-Protection "1; mode=block" always;
+        }
+
+        # Security: deny access to sensitive files
+        location ~ /\. {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+
+        location ~ ~$ {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+
+        # Block common attack patterns
+        location ~* (wp-|wordpress|admin|phpmyadmin) {
+            return 444;
+        }
+    }
+
+    # Additional server block for different domain/subdomain
+    server {
+        listen <%= ENV["PORT"] || 5000 %>;
+        listen [::]:<%= ENV["PORT"] || 5000 %>;
+        server_name api.<%= ENV["SERVER_NAME"] || "example.com" %>;
+
+        # Dedicated API server with different configuration
+        location / {
+            limit_req zone=api burst=50 nodelay;
+            return 200 '{"status": "API server", "version": "1.0"}';
+            add_header Content-Type application/json;
+            add_header X-Custom-App "<%= ENV["APP_NAME"] || 'nginx-buildpack-demo' %>" always;
+            add_header X-Frame-Options DENY always;
+            add_header X-Content-Type-Options nosniff always;
+            add_header X-XSS-Protection "1; mode=block" always;
+        }
+    }
+}

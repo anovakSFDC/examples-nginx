@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Custom Nginx Config Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            line-height: 1.6;
+            color: #333;
+        }
+        .feature {
+            background: #f5f5f5;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+            border-left: 4px solid #007acc;
+        }
+        .test-button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 3px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .test-button:hover {
+            background: #005999;
+        }
+        #results {
+            background: #000;
+            color: #00ff00;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🚀 Custom Nginx Configuration Demo</h1>
+
+    <p>This example demonstrates a custom <code>config/nginx.conf.erb</code> with advanced nginx features:</p>
+
+    <div class="feature">
+        <h3>✨ Features Implemented</h3>
+        <ul>
+            <li><strong>Rate Limiting:</strong> API endpoints (10 req/s) and login (1 req/s)</li>
+            <li><strong>CORS Headers:</strong> Proper cross-origin support for APIs</li>
+            <li><strong>Custom Logging:</strong> Enhanced log format with timing info</li>
+            <li><strong>Security Headers:</strong> XSS, CSRF, and content type protection</li>
+            <li><strong>IP Restrictions:</strong> Admin section limited to private networks</li>
+            <li><strong>Multiple Server Blocks:</strong> Main site + API subdomain</li>
+            <li><strong>Static Asset Caching:</strong> 1-year cache for CSS/JS/images</li>
+            <li><strong>SPA Routing:</strong> Fallback to index.html for client-side routing</li>
+        </ul>
+    </div>
+
+    <div class="feature">
+        <h3>🧪 Test the Features</h3>
+        <p>Click the buttons below to test different nginx configuration features:</p>
+
+        <button class="test-button" onclick="testEndpoint('/health')">Health Check</button>
+        <button class="test-button" onclick="testEndpoint('/api/test')">API Endpoint</button>
+        <button class="test-button" onclick="testEndpoint('/login')">Login (Rate Limited)</button>
+        <button class="test-button" onclick="testEndpoint('/admin/')">Admin Area</button>
+        <button class="test-button" onclick="testRateLimit()">Test Rate Limiting</button>
+        <button class="test-button" onclick="checkHeaders()">Check Headers</button>
+        <button class="test-button" onclick="testCORS()">Test CORS</button>
+    </div>
+
+    <div class="feature">
+        <h3>🔧 Environment Variables</h3>
+        <p>The nginx.conf.erb template supports these environment variables:</p>
+        <ul>
+            <li><code>APP_NAME</code> - Custom app name in headers</li>
+            <li><code>CORS_ORIGIN</code> - CORS allowed origin (default: *)</li>
+            <li><code>MAX_UPLOAD_SIZE</code> - Maximum upload size (default: 50m)</li>
+            <li><code>SERVER_NAME</code> - Server name for virtual hosts</li>
+            <li>Plus all standard nginx buildpack variables</li>
+        </ul>
+    </div>
+
+    <div id="results"></div>
+
+    <script>
+        const results = document.getElementById('results');
+
+        function log(message) {
+            results.textContent += new Date().toLocaleTimeString() + ': ' + message + '\n';
+            results.scrollTop = results.scrollHeight;
+        }
+
+        async function testEndpoint(path) {
+            log(`Testing ${path}...`);
+            try {
+                const response = await fetch(path);
+                const text = await response.text();
+                log(`${response.status} ${response.statusText}: ${text.substring(0, 100)}`);
+
+                // Log interesting headers
+                const customHeader = response.headers.get('X-Custom-App');
+                if (customHeader) {
+                    log(`Custom header: X-Custom-App = ${customHeader}`);
+                }
+            } catch (error) {
+                log(`Error: ${error.message}`);
+            }
+        }
+
+        async function testRateLimit() {
+            log('Testing rate limiting (sending 5 requests to /api/test)...');
+            for (let i = 0; i < 5; i++) {
+                try {
+                    const response = await fetch('/api/test');
+                    log(`Request ${i+1}: ${response.status} ${response.statusText}`);
+                } catch (error) {
+                    log(`Request ${i+1} failed: ${error.message}`);
+                }
+            }
+        }
+
+        async function checkHeaders() {
+            log('Checking security headers...');
+            try {
+                const response = await fetch('/', { method: 'HEAD' });
+                const headers = ['X-Frame-Options', 'X-Content-Type-Options', 'X-XSS-Protection', 'X-Custom-App'];
+                headers.forEach(header => {
+                    const value = response.headers.get(header);
+                    log(`${header}: ${value || 'Not present'}`);
+                });
+            } catch (error) {
+                log(`Error: ${error.message}`);
+            }
+        }
+
+        async function testCORS() {
+            log('Testing CORS with OPTIONS request to /api/...');
+            try {
+                const response = await fetch('/api/cors-test', {
+                    method: 'OPTIONS',
+                    headers: {
+                        'Access-Control-Request-Method': 'GET',
+                        'Access-Control-Request-Headers': 'Content-Type'
+                    }
+                });
+                log(`CORS preflight: ${response.status} ${response.statusText}`);
+                log(`Access-Control-Allow-Origin: ${response.headers.get('Access-Control-Allow-Origin')}`);
+                log(`Access-Control-Allow-Methods: ${response.headers.get('Access-Control-Allow-Methods')}`);
+            } catch (error) {
+                log(`Error: ${error.message}`);
+            }
+        }
+
+        // Initial greeting
+        log('Custom nginx configuration loaded successfully!');
+        log('Click the buttons above to test different features.');
+    </script>
+</body>
+</html>

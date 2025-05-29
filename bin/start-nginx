@@ -106,15 +106,23 @@ process_erb() {
     local template_file="$1"
     local output_file="$2"
 
-    # Simple ERB processing using environment variables
-    # Replace <%= ENV['VAR'] || 'default' %> with actual values
-    sed \
-        -e "s|<%= ENV\[\"NGINX_WORKERS\"\] || 1 %>|${NGINX_WORKERS}|g" \
-        -e "s|<%= ENV\[\"NGINX_WORKER_CONNECTIONS\"\] || 1024 %>|${NGINX_WORKER_CONNECTIONS}|g" \
-        -e "s|<%= ENV\[\"NGINX_ACCESS_LOG_PATH\"\] || \"/dev/stdout\" %>|${NGINX_ACCESS_LOG_PATH}|g" \
-        -e "s|<%= ENV\[\"NGINX_ERROR_LOG_PATH\"\] || \"/dev/stderr\" %>|${NGINX_ERROR_LOG_PATH}|g" \
-        -e "s|<%= ENV\[\"PORT\"\] || 5000 %>|${PORT:-5000}|g" \
-        "$template_file" > "$output_file"
+    echo "-----> Processing ERB template with environment variables"
+
+    # Use a simple but reliable replacement approach
+    cp "$template_file" "$output_file"
+
+    # Replace variables one by one with simple string replacement
+    # Use @ as delimiter to avoid conflicts with paths
+    sed -i "s@<%= ENV\[\"NGINX_WORKERS\"\] || 1 %>@${NGINX_WORKERS}@g" "$output_file"
+    sed -i "s@<%= ENV\[\"NGINX_WORKER_CONNECTIONS\"\] || 1024 %>@${NGINX_WORKER_CONNECTIONS}@g" "$output_file"
+    sed -i "s@<%= ENV\[\"NGINX_ACCESS_LOG_PATH\"\] || \"/dev/stdout\" %>@${NGINX_ACCESS_LOG_PATH}@g" "$output_file"
+    sed -i "s@<%= ENV\[\"NGINX_ERROR_LOG_PATH\"\] || \"/dev/stderr\" %>@${NGINX_ERROR_LOG_PATH}@g" "$output_file"
+    sed -i "s@<%= ENV\[\"PORT\"\] || 5000 %>@${PORT:-5000}@g" "$output_file"
+    sed -i "s@<%= ENV\[\"APP_NAME\"\] || 'nginx-buildpack-demo' %>@${APP_NAME:-nginx-buildpack-demo}@g" "$output_file"
+    sed -i "s@<%= ENV\[\"CORS_ORIGIN\"\] || \"\\*\" %>@${CORS_ORIGIN:-*}@g" "$output_file"
+    sed -i "s@<%= ENV\[\"MAX_UPLOAD_SIZE\"\] || \"50m\" %>@${MAX_UPLOAD_SIZE:-50m}@g" "$output_file"
+    sed -i "s@<%= ENV\[\"SERVER_NAME\"\] || \"_\" %>@${SERVER_NAME:-_}@g" "$output_file"
+    sed -i "s@<%= ENV\[\"SERVER_NAME\"\] || \"example.com\" %>@${SERVER_NAME:-example.com}@g" "$output_file"
 }
 
 # Use custom config if available, otherwise use our proxy config
