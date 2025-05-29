@@ -90,3 +90,21 @@ Your application server must:
 - `PORT`: Port for nginx to listen on (default: 5000)
 - `NGINX_ACCESS_LOG_PATH`: Access log destination (default: /dev/stdout)
 - `NGINX_ERROR_LOG_PATH`: Error log destination (default: /dev/stderr)
+- `NGINX_IPV6_ONLY`: Set to "true" for IPv6-only platforms (default: false)
+
+## IPv6-Only Deployment
+
+For IPv6-only platforms, set the environment variable:
+
+```bash
+# Build with IPv6-only configuration
+docker run -p 8080:5000 -e NGINX_IPV6_ONLY=true nginx-proxy-test
+
+# Or set in your platform configuration
+NGINX_IPV6_ONLY=true
+```
+
+This configures nginx to:
+- Listen only on IPv6 addresses
+- Use IPv6 DNS resolvers
+- Optimize for IPv6-only environments

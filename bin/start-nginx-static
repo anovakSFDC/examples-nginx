@@ -7,6 +7,7 @@ NGINX_WORKER_CONNECTIONS="${NGINX_WORKER_CONNECTIONS:-1024}"
 NGINX_ACCESS_LOG_PATH="${NGINX_ACCESS_LOG_PATH:-/dev/stdout}"
 NGINX_ERROR_LOG_PATH="${NGINX_ERROR_LOG_PATH:-/dev/stderr}"
 NGINX_ROOT="${NGINX_ROOT:-/workspace}"
+NGINX_IPV6_ONLY="${NGINX_IPV6_ONLY:-false}"
 
 # Paths - use actual runtime location
 NGINX_LAYER_DIR="/layers/jabrown85-examples_nginx/nginx"
@@ -40,6 +41,14 @@ fi
 
 echo "-----> Document root: $DOCUMENT_ROOT"
 
+# Determine listen directives based on IPv6 mode
+if [[ "$NGINX_IPV6_ONLY" == "true" ]]; then
+    LISTEN_DIRECTIVES="listen [::]:${PORT:-5000} ipv6only=on;"
+else
+    LISTEN_DIRECTIVES="listen ${PORT:-5000};
+        listen [::]:${PORT:-5000};"
+fi
+
 # Create nginx configuration for static mode
 cat > "$NGINX_CONFIG_FILE" << EOL
 # Override default error log location immediately
@@ -56,7 +65,7 @@ events {
 }
 
 http {
-    include       /layers/jabrown85-examples_nginx/nginx/etc/nginx/mime.types;
+    include       ${NGINX_LAYER_DIR}/etc/nginx/mime.types;
     default_type  application/octet-stream;
 
     # Temporary file paths
@@ -95,7 +104,7 @@ http {
         image/svg+xml;
 
     server {
-        listen ${PORT:-5000};
+        ${LISTEN_DIRECTIVES}
         server_name _;
         root ${DOCUMENT_ROOT};
         index index.html index.htm;
