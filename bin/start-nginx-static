@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+# Default variables
+NGINX_WORKERS="${NGINX_WORKERS:-1}"
+NGINX_WORKER_CONNECTIONS="${NGINX_WORKER_CONNECTIONS:-1024}"
+NGINX_ACCESS_LOG_PATH="${NGINX_ACCESS_LOG_PATH:-/dev/stdout}"
+NGINX_ERROR_LOG_PATH="${NGINX_ERROR_LOG_PATH:-/dev/stderr}"
+NGINX_ROOT="${NGINX_ROOT:-/workspace}"
+
+# Paths - use actual runtime location
+NGINX_LAYER_DIR="/layers/jabrown85-examples_nginx/nginx"
+NGINX_BIN="$NGINX_LAYER_DIR/sbin/nginx"
+NGINX_CONFIG_DIR="$NGINX_LAYER_DIR/etc/nginx"
+NGINX_CONFIG_FILE="/tmp/nginx.conf"
+
+echo "-----> Starting nginx in static file mode"
+
+# Create necessary directories
+mkdir -p /tmp/nginx/client_temp
+mkdir -p /tmp/nginx/proxy_temp
+mkdir -p /tmp/nginx/fastcgi_temp
+mkdir -p /tmp/nginx/uwsgi_temp
+mkdir -p /tmp/nginx/scgi_temp
+
+# Create nginx log directory to prevent startup errors (use /tmp since /var is read-only)
+mkdir -p /tmp/nginx/log
+
+# Determine the document root
+DOCUMENT_ROOT="$NGINX_ROOT"
+if [[ -d "public" ]]; then
+    DOCUMENT_ROOT="$NGINX_ROOT/public"
+elif [[ -d "dist" ]]; then
+    DOCUMENT_ROOT="$NGINX_ROOT/dist"
+elif [[ -d "build" ]]; then
+    DOCUMENT_ROOT="$NGINX_ROOT/build"
+elif [[ -d "www" ]]; then
+    DOCUMENT_ROOT="$NGINX_ROOT/www"
+fi
+
+echo "-----> Document root: $DOCUMENT_ROOT"
+
+# Create nginx configuration for static mode
+cat > "$NGINX_CONFIG_FILE" << EOL
+# Override default error log location immediately
+error_log ${NGINX_ERROR_LOG_PATH};
+
+daemon off;
+worker_processes ${NGINX_WORKERS};
+pid /tmp/nginx.pid;
+
+events {
+    worker_connections ${NGINX_WORKER_CONNECTIONS};
+    use epoll;
+    accept_mutex on;
+}
+
+http {
+    include       /layers/jabrown85-examples_nginx/nginx/etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    # Temporary file paths
+    client_body_temp_path /tmp/nginx/client_temp;
+    proxy_temp_path /tmp/nginx/proxy_temp;
+    fastcgi_temp_path /tmp/nginx/fastcgi_temp;
+    uwsgi_temp_path /tmp/nginx/uwsgi_temp;
+    scgi_temp_path /tmp/nginx/scgi_temp;
+
+    log_format l2met 'measure#nginx.service=\$request_time request_id=\$http_x_request_id';
+    access_log ${NGINX_ACCESS_LOG_PATH} l2met;
+    error_log ${NGINX_ERROR_LOG_PATH};
+
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    client_max_body_size 50m;
+
+    # Enable gzip compression
+    gzip on;
+    gzip_comp_level 6;
+    gzip_vary on;
+    gzip_min_length 1000;
+    gzip_proxied any;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        text/javascript
+        application/json
+        application/javascript
+        application/xml+rss
+        application/atom+xml
+        image/svg+xml;
+
+    server {
+        listen ${PORT:-5000};
+        server_name _;
+        root ${DOCUMENT_ROOT};
+        index index.html index.htm;
+
+        # Security headers
+        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff;
+        add_header X-XSS-Protection "1; mode=block";
+
+        # Handle SPA routing (try files then fallback to index.html)
+        location / {
+            try_files \$uri \$uri/ /index.html;
+        }
+
+        # Cache static assets
+        location ~* \.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)\$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            access_log off;
+        }
+
+        # Handle health checks
+        location /health {
+            access_log off;
+            return 200 "healthy\\n";
+            add_header Content-Type text/plain;
+        }
+
+        # Security: deny access to sensitive files
+        location ~ /\\. {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+
+        location ~ ~\$ {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+    }
+}
+EOL
+
+# Function to process ERB template (kept for custom configs)
+process_erb() {
+    local template_file="$1"
+    local output_file="$2"
+
+    # Simple ERB processing using environment variables
+    # Replace <%= ENV['VAR'] || 'default' %> with actual values
+    sed \
+        -e "s|<%= ENV\[\"NGINX_WORKERS\"\] || 1 %>|${NGINX_WORKERS}|g" \
+        -e "s|<%= ENV\[\"NGINX_WORKER_CONNECTIONS\"\] || 1024 %>|${NGINX_WORKER_CONNECTIONS}|g" \
+        -e "s|<%= ENV\[\"NGINX_ACCESS_LOG_PATH\"\] || \"/dev/stdout\" %>|${NGINX_ACCESS_LOG_PATH}|g" \
+        -e "s|<%= ENV\[\"NGINX_ERROR_LOG_PATH\"\] || \"/dev/stderr\" %>|${NGINX_ERROR_LOG_PATH}|g" \
+        -e "s|<%= ENV\[\"PORT\"\] || 5000 %>|${PORT:-5000}|g" \
+        -e "s|<%= ENV\[\"DOCUMENT_ROOT\"\] || \"/workspace\" %>|${DOCUMENT_ROOT}|g" \
+        "$template_file" > "$output_file"
+}
+
+# Use custom config if available, otherwise use our static config
+if [[ -f "config/nginx.conf.erb" ]]; then
+    echo "-----> Using custom nginx.conf.erb"
+    process_erb "config/nginx.conf.erb" "$NGINX_CONFIG_FILE"
+else
+    echo "-----> Using default static file configuration"
+    # Configuration already generated above
+fi
+
+# Check if static.json exists for additional configuration
+if [[ -f "static.json" ]]; then
+    echo "-----> Found static.json configuration"
+    # Here you could parse static.json for additional configuration
+    # For now, we'll just acknowledge it exists
+fi
+
+# Function to cleanup on exit
+cleanup() {
+    echo "-----> Shutting down nginx"
+    if [[ -n "$NGINX_PID" ]]; then
+        kill "$NGINX_PID" 2>/dev/null || true
+        wait "$NGINX_PID" 2>/dev/null || true
+    fi
+    rm -f "/tmp/nginx.pid"
+}
+
+# Set up signal handlers
+trap cleanup SIGTERM SIGINT
+
+# Start nginx
+echo "-----> Starting nginx"
+"$NGINX_BIN" -c "$NGINX_CONFIG_FILE" &
+NGINX_PID=$!
+
+# Wait for nginx process
+echo "-----> Nginx is serving static files from $DOCUMENT_ROOT"
+wait "$NGINX_PID"

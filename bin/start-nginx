@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+# Default variables
+NGINX_SOCKET="/tmp/nginx.socket"
+APP_INITIALIZED="/tmp/app-initialized"
+NGINX_WORKERS="${NGINX_WORKERS:-1}"
+NGINX_WORKER_CONNECTIONS="${NGINX_WORKER_CONNECTIONS:-1024}"
+NGINX_ACCESS_LOG_PATH="${NGINX_ACCESS_LOG_PATH:-/dev/stdout}"
+NGINX_ERROR_LOG_PATH="${NGINX_ERROR_LOG_PATH:-/dev/stderr}"
+
+# Paths - use actual runtime location
+NGINX_LAYER_DIR="/layers/jabrown85-examples_nginx/nginx"
+NGINX_BIN="$NGINX_LAYER_DIR/sbin/nginx"
+NGINX_CONFIG_DIR="$NGINX_LAYER_DIR/etc/nginx"
+NGINX_CONFIG_FILE="/tmp/nginx.conf"
+
+echo "-----> Starting nginx with app server"
+
+# Create necessary directories
+mkdir -p /tmp/nginx/client_temp
+mkdir -p /tmp/nginx/proxy_temp
+mkdir -p /tmp/nginx/fastcgi_temp
+mkdir -p /tmp/nginx/uwsgi_temp
+mkdir -p /tmp/nginx/scgi_temp
+
+# Create nginx log directory to prevent startup errors (use /tmp since /var is read-only)
+mkdir -p /tmp/nginx/log
+
+# Check if app server command was provided
+if [[ $# -eq 0 ]]; then
+    echo "ERROR: You must provide an app server command"
+    echo "Usage: start-nginx <app-server-command>"
+    echo "Example: start-nginx bundle exec unicorn -c config/unicorn.rb"
+    exit 1
+fi
+
+# Create nginx configuration for proxy mode
+cat > "$NGINX_CONFIG_FILE" << EOL
+# Override default error log location immediately
+error_log ${NGINX_ERROR_LOG_PATH};
+
+daemon off;
+worker_processes ${NGINX_WORKERS};
+pid /tmp/nginx.pid;
+
+events {
+    worker_connections ${NGINX_WORKER_CONNECTIONS};
+    use epoll;
+    accept_mutex on;
+}
+
+http {
+    include       /layers/jabrown85-examples_nginx/nginx/etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    # Temporary file paths
+    client_body_temp_path /tmp/nginx/client_temp;
+    proxy_temp_path /tmp/nginx/proxy_temp;
+    fastcgi_temp_path /tmp/nginx/fastcgi_temp;
+    uwsgi_temp_path /tmp/nginx/uwsgi_temp;
+    scgi_temp_path /tmp/nginx/scgi_temp;
+
+    log_format l2met 'measure#nginx.service=\$request_time request_id=\$http_x_request_id';
+    access_log ${NGINX_ACCESS_LOG_PATH} l2met;
+    error_log ${NGINX_ERROR_LOG_PATH};
+
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    client_max_body_size 50m;
+
+    upstream app_server {
+        server unix:/tmp/nginx.socket fail_timeout=0;
+    }
+
+    server {
+        listen ${PORT:-5000};
+        server_name _;
+        keepalive_timeout 5;
+
+        location / {
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+            proxy_set_header Host \$http_host;
+            proxy_redirect off;
+            proxy_pass http://app_server;
+        }
+    }
+}
+EOL
+
+# Function to process ERB template
+process_erb() {
+    local template_file="$1"
+    local output_file="$2"
+
+    # Simple ERB processing using environment variables
+    # Replace <%= ENV['VAR'] || 'default' %> with actual values
+    sed \
+        -e "s|<%= ENV\[\"NGINX_WORKERS\"\] || 1 %>|${NGINX_WORKERS}|g" \
+        -e "s|<%= ENV\[\"NGINX_WORKER_CONNECTIONS\"\] || 1024 %>|${NGINX_WORKER_CONNECTIONS}|g" \
+        -e "s|<%= ENV\[\"NGINX_ACCESS_LOG_PATH\"\] || \"/dev/stdout\" %>|${NGINX_ACCESS_LOG_PATH}|g" \
+        -e "s|<%= ENV\[\"NGINX_ERROR_LOG_PATH\"\] || \"/dev/stderr\" %>|${NGINX_ERROR_LOG_PATH}|g" \
+        -e "s|<%= ENV\[\"PORT\"\] || 5000 %>|${PORT:-5000}|g" \
+        "$template_file" > "$output_file"
+}
+
+# Use custom config if available, otherwise use our proxy config
+if [[ -f "config/nginx.conf.erb" ]]; then
+    echo "-----> Using custom nginx.conf.erb"
+    process_erb "config/nginx.conf.erb" "$NGINX_CONFIG_FILE"
+else
+    echo "-----> Using default proxy configuration"
+    # Configuration already generated above
+fi
+
+# Function to cleanup processes on exit
+cleanup() {
+    echo "-----> Shutting down nginx and app server"
+    if [[ -n "$NGINX_PID" ]]; then
+        kill "$NGINX_PID" 2>/dev/null || true
+        wait "$NGINX_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$APP_PID" ]]; then
+        kill "$APP_PID" 2>/dev/null || true
+        wait "$APP_PID" 2>/dev/null || true
+    fi
+    # Clean up socket and pid files
+    rm -f "$NGINX_SOCKET" "/tmp/nginx.pid" "$APP_INITIALIZED"
+}
+
+# Set up signal handlers
+trap cleanup SIGTERM SIGINT
+
+# Clean up any existing socket files
+rm -f "$NGINX_SOCKET" "$APP_INITIALIZED"
+
+# Start the app server in the background
+echo "-----> Starting app server: $*"
+"$@" &
+APP_PID=$!
+
+# Wait for app to be ready (check for app-initialized file)
+echo "-----> Waiting for app server to initialize..."
+timeout=60
+while [[ ! -f "$APP_INITIALIZED" ]] && [[ $timeout -gt 0 ]]; do
+    sleep 1
+    ((timeout--))
+    if ! kill -0 "$APP_PID" 2>/dev/null; then
+        echo "ERROR: App server process died"
+        exit 1
+    fi
+done
+
+if [[ ! -f "$APP_INITIALIZED" ]]; then
+    echo "ERROR: App server failed to initialize within 60 seconds"
+    echo "Make sure your app server creates the file $APP_INITIALIZED when ready"
+    exit 1
+fi
+
+# Start nginx
+echo "-----> Starting nginx"
+"$NGINX_BIN" -c "$NGINX_CONFIG_FILE" &
+NGINX_PID=$!
+
+# Wait for either process to exit
+wait_for_processes() {
+    while true; do
+        if ! kill -0 "$NGINX_PID" 2>/dev/null; then
+            echo "ERROR: nginx process died"
+            cleanup
+            exit 1
+        fi
+        if ! kill -0 "$APP_PID" 2>/dev/null; then
+            echo "ERROR: App server process died"
+            cleanup
+            exit 1
+        fi
+        sleep 1
+    done
+}
+
+echo "-----> Both nginx and app server are running"
+wait_for_processes

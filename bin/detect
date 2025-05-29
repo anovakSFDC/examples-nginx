@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+# Detect if this is an nginx application
+# Look for nginx.conf.erb, static files, or explicit nginx requirement
+
+if [[ -f "config/nginx.conf.erb" ]]; then
+    echo "nginx (custom config)"
+    exit 0
+fi
+
+if [[ -f "static.json" ]]; then
+    echo "nginx (static site)"
+    exit 0
+fi
+
+if [[ -f "Procfile" ]] && grep -q "nginx" "Procfile"; then
+    echo "nginx (procfile)"
+    exit 0
+fi
+
+# Check for common static file directories
+if [[ -d "public" ]] || [[ -d "dist" ]] || [[ -d "build" ]] || [[ -d "www" ]]; then
+    echo "nginx (static files detected)"
+    exit 0
+fi
+
+# Check for package.json indicating a frontend app
+if [[ -f "package.json" ]] && grep -q '"build"' "package.json"; then
+    echo "nginx (frontend app)"
+    exit 0
+fi
+
+exit 100

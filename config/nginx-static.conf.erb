@@ -1,0 +1,102 @@
+daemon off;
+worker_processes <%= ENV['NGINX_WORKERS'] || 1 %>;
+pid /tmp/nginx.pid;
+
+events {
+    worker_connections <%= ENV['NGINX_WORKER_CONNECTIONS'] || 1024 %>;
+    use epoll;
+    accept_mutex on;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format l2met 'measure#nginx.service=$request_time request_id=$http_x_request_id';
+    access_log <%= ENV['NGINX_ACCESS_LOG_PATH'] || '/dev/stdout' %> l2met;
+    error_log <%= ENV['NGINX_ERROR_LOG_PATH'] || '/dev/stderr' %>;
+
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    client_max_body_size 50m;
+
+    # Enable gzip compression
+    gzip on;
+    gzip_comp_level 6;
+    gzip_vary on;
+    gzip_min_length 1000;
+    gzip_proxied any;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        text/javascript
+        application/json
+        application/javascript
+        application/xml+rss
+        application/atom+xml
+        image/svg+xml;
+
+    server {
+        listen <%= ENV['PORT'] || 5000 %>;
+        server_name _;
+        root <%= ENV['DOCUMENT_ROOT'] || '/workspace/public' %>;
+        index index.html index.htm;
+
+        # Security headers
+        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff;
+        add_header X-XSS-Protection "1; mode=block";
+
+        # Optional: Force HTTPS
+        # if ($http_x_forwarded_proto != "https") {
+        #     return 301 https://$host$request_uri;
+        # }
+
+        # Handle SPA routing (try files then fallback to index.html)
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        # Cache static assets for better performance
+        location ~* \.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            access_log off;
+        }
+
+        # Handle API routes (if your SPA needs them)
+        # location /api {
+        #     # Add your API proxy configuration here
+        #     return 404;
+        # }
+
+        # Health check endpoint
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+
+        # Security: deny access to sensitive files
+        location ~ /\. {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+
+        location ~ ~$ {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+
+        # Additional mime types for modern web apps
+        location ~* \.wasm$ {
+            add_header Content-Type application/wasm;
+        }
+    }
+}

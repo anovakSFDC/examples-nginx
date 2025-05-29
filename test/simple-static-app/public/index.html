@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nginx CNB Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .status {
+            background: #e8f5e8;
+            border: 1px solid #4caf50;
+            color: #2e7d2e;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Nginx CNB Test App</h1>
+        <div class="status">
+            ✅ Static file serving is working correctly!
+        </div>
+        <p>This is a test application for the nginx Cloud Native Buildpack.</p>
+        <p>If you can see this page, the buildpack successfully:</p>
+        <ul>
+            <li>Detected this as a static file application</li>
+            <li>Installed and configured nginx</li>
+            <li>Started serving static files</li>
+        </ul>
+        <p><strong>Try the health check:</strong> <a href="/health">/health</a></p>
+    </div>
+</body>
+</html>

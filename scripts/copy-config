@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+CONFIG_TYPE="${1:-static}"
+NGINX_LAYER_DIR="${CNB_LAYERS_DIR}/nginx"
+CONFIG_SOURCE="$NGINX_LAYER_DIR/config"
+
+echo "-----> Copying nginx configuration template"
+
+# Create config directory if it doesn't exist
+mkdir -p config
+
+case "$CONFIG_TYPE" in
+    "proxy")
+        echo "-----> Copying proxy configuration template"
+        cp "$CONFIG_SOURCE/nginx-proxy.conf.erb" "config/nginx.conf.erb"
+        echo "-----> Template copied to config/nginx.conf.erb"
+        echo "-----> Edit this file to customize your nginx configuration"
+        echo "-----> Use with: start-nginx <your-app-server-command>"
+        ;;
+    "static")
+        echo "-----> Copying static file configuration template"
+        cp "$CONFIG_SOURCE/nginx-static.conf.erb" "config/nginx.conf.erb"
+        echo "-----> Template copied to config/nginx.conf.erb"
+        echo "-----> Edit this file to customize your nginx configuration"
+        echo "-----> Use with: start-nginx-static"
+        ;;
+    *)
+        echo "Usage: copy-config [proxy|static]"
+        echo "  proxy  - Copy template for proxy mode (nginx + app server)"
+        echo "  static - Copy template for static file serving (default)"
+        exit 1
+        ;;
+esac
+
+echo "-----> Configuration template copied successfully!"

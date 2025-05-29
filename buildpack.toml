@@ -1,0 +1,23 @@
+api = "0.10"
+
+[buildpack]
+id = "jabrown85-examples/nginx"
+version = "1.0.0"
+name = "Nginx"
+description = "A Cloud Native Buildpack for nginx web server"
+homepage = "https://github.com/jabrown85-examples/nginx-cnb"
+keywords = ["nginx", "web-server", "proxy", "static"]
+
+# Targets the buildpack will work with
+[[targets]]
+os = "linux"
+arch = "arm64"
+
+# Optional amd64 support for local development
+[[targets]]
+os = "linux"
+arch = "amd64"
+
+# Stack compatibility
+[[stacks]]
+id = "*"

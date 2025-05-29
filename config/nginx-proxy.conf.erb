@@ -1,0 +1,60 @@
+daemon off;
+worker_processes <%= ENV['NGINX_WORKERS'] || 1 %>;
+pid /tmp/nginx.pid;
+
+events {
+    worker_connections <%= ENV['NGINX_WORKER_CONNECTIONS'] || 1024 %>;
+    use epoll;
+    accept_mutex on;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format l2met 'measure#nginx.service=$request_time request_id=$http_x_request_id';
+    access_log <%= ENV['NGINX_ACCESS_LOG_PATH'] || '/dev/stdout' %> l2met;
+    error_log <%= ENV['NGINX_ERROR_LOG_PATH'] || '/dev/stderr' %>;
+
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    client_max_body_size 50m;
+
+    upstream app_server {
+        server unix:/tmp/nginx.socket fail_timeout=0;
+    }
+
+    server {
+        listen <%= ENV['PORT'] || 5000 %>;
+        server_name _;
+        keepalive_timeout 5;
+
+        # Optional: Force HTTPS
+        # if ($http_x_forwarded_proto != "https") {
+        #     return 301 https://$host$request_uri;
+        # }
+
+        location / {
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Host $http_host;
+            proxy_redirect off;
+            proxy_pass http://app_server;
+
+            # Optional: Set timeouts
+            proxy_connect_timeout 60s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+        }
+
+        # Health check endpoint
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+    }
+}

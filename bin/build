@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+echo "-----> Installing Nginx"
+
+# CNB layer directory for nginx
+NGINX_LAYER_DIR="${CNB_LAYERS_DIR}/nginx"
+NGINX_VERSION="${NGINX_VERSION:-1.26.2}"
+BUILDPACK_DIR="${CNB_BUILDPACK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# Determine architecture
+ARCH="${CNB_TARGET_ARCH:-$(uname -m)}"
+case "$ARCH" in
+    x86_64) NGINX_ARCH="amd64" ;;
+    aarch64|arm64) NGINX_ARCH="arm64" ;;
+    *) echo "ERROR: Unsupported architecture: $ARCH" && exit 1 ;;
+esac
+
+echo "-----> Targeting architecture: $NGINX_ARCH"
+
+# Check if nginx is already cached
+if [[ -f "$NGINX_LAYER_DIR/nginx-version" ]] && grep -q "$NGINX_VERSION" "$NGINX_LAYER_DIR/nginx-version"; then
+    echo "-----> Using Nginx $NGINX_VERSION from cache"
+
+    # Configure layer settings
+    cat > "${NGINX_LAYER_DIR}.toml" << EOL
+[types]
+build = true
+cache = true
+launch = true
+EOL
+    exit 0
+fi
+
+echo "-----> Installing Nginx $NGINX_VERSION"
+
+# Clean and create nginx layer directory
+rm -rf "$NGINX_LAYER_DIR"
+mkdir -p "$NGINX_LAYER_DIR"
+
+# Create temporary directory for nginx installation
+TEMP_DIR=$(mktemp -d)
+cd "$TEMP_DIR"
+
+# Download and install nginx from Ubuntu package
+echo "-----> Downloading nginx package"
+
+# For Ubuntu 24.04 (noble)
+UBUNTU_VERSION="noble"
+NGINX_DEB_URL="http://nginx.org/packages/ubuntu/pool/nginx/n/nginx/nginx_${NGINX_VERSION}-1~${UBUNTU_VERSION}_${NGINX_ARCH}.deb"
+
+echo "-----> Downloading from: $NGINX_DEB_URL"
+if ! curl -sSL "$NGINX_DEB_URL" -o nginx.deb; then
+    echo "ERROR: Failed to download nginx package"
+    echo "URL: $NGINX_DEB_URL"
+    exit 1
+fi
+
+# Verify the package was downloaded
+if [[ ! -f nginx.deb ]] || [[ ! -s nginx.deb ]]; then
+    echo "ERROR: Downloaded package is empty or missing"
+    exit 1
+fi
+
+# Extract the deb package
+echo "-----> Extracting nginx package"
+ar x nginx.deb
+
+# Find the data archive (could be .tar.gz, .tar.xz, .tar.zst, etc.)
+DATA_ARCHIVE=""
+if [[ -f "data.tar.gz" ]]; then
+    DATA_ARCHIVE="data.tar.gz"
+    EXTRACT_CMD="tar -xzf"
+elif [[ -f "data.tar.xz" ]]; then
+    DATA_ARCHIVE="data.tar.xz"
+    EXTRACT_CMD="tar -xJf"
+elif [[ -f "data.tar.zst" ]]; then
+    DATA_ARCHIVE="data.tar.zst"
+    EXTRACT_CMD="tar --zstd -xf"
+elif [[ -f "data.tar" ]]; then
+    DATA_ARCHIVE="data.tar"
+    EXTRACT_CMD="tar -xf"
+else
+    echo "ERROR: Could not find data archive in deb package"
+    echo "Available files:"
+    ls -la
+    exit 1
+fi
+
+echo "-----> Extracting $DATA_ARCHIVE"
+$EXTRACT_CMD "$DATA_ARCHIVE"
+
+# Verify extraction worked
+if [[ ! -d "usr" ]]; then
+    echo "ERROR: Extraction failed - usr directory not found"
+    echo "Current directory contents:"
+    ls -la
+    exit 1
+fi
+
+# Copy nginx binary and configuration
+mkdir -p "$NGINX_LAYER_DIR/bin"
+mkdir -p "$NGINX_LAYER_DIR/sbin"
+mkdir -p "$NGINX_LAYER_DIR/etc/nginx"
+mkdir -p "$NGINX_LAYER_DIR/var/log/nginx"
+mkdir -p "$NGINX_LAYER_DIR/var/cache/nginx"
+
+# Copy nginx executable
+if [[ -f "usr/sbin/nginx" ]]; then
+    cp usr/sbin/nginx "$NGINX_LAYER_DIR/sbin/"
+    ln -sf "../sbin/nginx" "$NGINX_LAYER_DIR/bin/nginx"
+else
+    echo "ERROR: nginx binary not found in expected location"
+    echo "usr/sbin contents:"
+    ls -la usr/sbin/ || echo "usr/sbin directory not found"
+    exit 1
+fi
+
+# Copy default configuration files
+if [[ -d "etc/nginx" ]]; then
+    cp -r etc/nginx/* "$NGINX_LAYER_DIR/etc/nginx/"
+else
+    echo "WARNING: nginx config directory not found, creating minimal config"
+    # Create minimal nginx.conf
+    cat > "$NGINX_LAYER_DIR/etc/nginx/nginx.conf" << 'EOF'
+events {
+    worker_connections 1024;
+}
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+    sendfile        on;
+    keepalive_timeout  65;
+    server {
+        listen       80;
+        server_name  localhost;
+        location / {
+            root   html;
+            index  index.html index.htm;
+        }
+    }
+}
+EOF
+
+    # Create basic mime.types
+    cat > "$NGINX_LAYER_DIR/etc/nginx/mime.types" << 'EOF'
+types {
+    text/html                             html htm shtml;
+    text/css                              css;
+    text/xml                              xml;
+    image/gif                             gif;
+    image/jpeg                            jpeg jpg;
+    application/javascript                js;
+    application/atom+xml                  atom;
+    application/rss+xml                   rss;
+    application/json                      json;
+}
+EOF
+fi
+
+# Copy buildpack helper scripts to the layer
+mkdir -p "$NGINX_LAYER_DIR/scripts"
+if [[ -d "$BUILDPACK_DIR/scripts" ]]; then
+    cp -r "$BUILDPACK_DIR/scripts/"* "$NGINX_LAYER_DIR/scripts/"
+fi
+
+# Copy configuration templates
+mkdir -p "$NGINX_LAYER_DIR/config"
+if [[ -d "$BUILDPACK_DIR/config" ]]; then
+    cp -r "$BUILDPACK_DIR/config/"* "$NGINX_LAYER_DIR/config/"
+fi
+
+# Create helper scripts in bin directory (these will be available in PATH)
+if [[ -f "$BUILDPACK_DIR/bin/start-nginx" ]]; then
+    cp "$BUILDPACK_DIR/bin/start-nginx" "$NGINX_LAYER_DIR/bin/"
+fi
+if [[ -f "$BUILDPACK_DIR/bin/start-nginx-static" ]]; then
+    cp "$BUILDPACK_DIR/bin/start-nginx-static" "$NGINX_LAYER_DIR/bin/"
+fi
+
+# Create version marker
+echo "$NGINX_VERSION" > "$NGINX_LAYER_DIR/nginx-version"
+
+# Clean up
+cd /
+rm -rf "$TEMP_DIR"
+
+# Configure layer settings - Fixed TOML syntax
+cat > "${NGINX_LAYER_DIR}.toml" << EOL
+[types]
+build = true
+cache = true
+launch = true
+EOL
+
+echo "-----> Nginx $NGINX_VERSION installed successfully"
