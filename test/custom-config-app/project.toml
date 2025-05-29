@@ -1,0 +1,12 @@
+[_]
+schema-version = "0.2"
+id = "heroku/sample-nginx-ap"
+name = "sample-nginx.app"
+version = "1.0.0"
+
+[[io.buildpacks.group]]
+uri = "ghcr.io/jabrown85/examples-nginx-buildpack:1.0.2"
+
+
+[[io.buildpacks.group]]
+uri = "heroku/procfile"
